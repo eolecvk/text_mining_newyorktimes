@@ -1,0 +1,720 @@
+---
+title: "MA710 - New York Times Articles"
+author: "Eole Cervenka"
+geometry: margin=3cm
+date: "3 Apr 2016"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE, echo=FALSE,  eval = TRUE}
+knitr::opts_chunk$set(cache=TRUE, fig.width = 6)
+
+library(cluster)
+library(RCurl)
+library(RJSONIO)
+library(rlist)
+library(stringr)
+library(dplyr)
+library(magrittr)
+library(RTextTools)
+library(ngram)
+
+load("/home/eolus/Dropbox/MA710 Perso/ASSG2/Workspace/base_functions.RData")
+load("/home/eolus/Dropbox/MA710 Perso/ASSG2/Workspace/custom_functions.RData")
+
+load('/home/eolus/Dropbox/MA710 Perso/ASSG2/Workspace/outputs.RData')
+load('/home/eolus/Dropbox/MA710 Perso/ASSG2/Workspace/cleaned_data.RData')
+```
+
+
+\pagebreak
+
+
+## Introduction
+
+### Data source
+
+The data used for this research consists of snippets of articles from the New York Times. It is collected from the newspaper website using the [Article Search API](http://developer.nytimes.com/docs/read/article_search_api_v2).
+
+The New York Times is an influential media. It is the second largest newspaper in circulation in the United States. The newspaper web site ranks 59th worldwide by number of monthly unique visitors.
+
+
+### Objectives
+
+The objective of this research is to analyze the narrative around robots in the current western society.
+I will use clustering analysis as a text mining technique to identify the main ideas conveyed in the articles in relationship with the concept of 'robot' and rank their relative influence in the media sphere.
+
+I assume that the recent years content of New York Times articles provides an accurate reflection the perception of robots in the modern American society.
+I am also making the assumption that the most influential ideas are conveyed in more articles than less influential ideas. I am not using any metric to measure individual influence of articles relatively to each other.
+
+
+## Data Preparation
+
+### Selection of the source
+
+I chose to use snippets for this text analysis because snippets are short and focus on the subject. Therefore, they provide a simple base material to link concepts together.
+
+```{r, echo=TRUE,eval=FALSE}
+
+SOURCE_LIST <- c(
+  'headline',        #1
+  'snippet',         #2
+  'lead_paragraph',  #3
+  'abstract'         #4
+)
+
+### DATA SOURCING
+
+data_source = SOURCE_LIST[2]        # Select snippets
+
+if (data_source == SOURCE_LIST[1]){
+  docs = article.df$headline
+} else if (data_source == SOURCE_LIST[2]){
+  docs = article.df$snippet
+} else if (data_source == SOURCE_LIST[3]){
+  docs = article.df$lead_paragraph
+} else if(data_source == SOURCE_LIST[4]){
+  docs = article.df$abstract
+} else {
+  stopifnot(1 ==0)
+}
+
+```
+
+
+### Data cleaning
+
+As a preliminary step, I cleaned the data input by removing the empty and `NA` values.
+
+
+```{r, eval=FALSE, echo=TRUE}
+# Remove empty, NULL, blank cells: 
+docs <- docs[empty.doc.logical(docs)]
+
+# length(docs) // 1010 => 998
+```
+
+
+Then, I noticed that many irrelevant entries were duplicated, for instance when the snippet indicates the name of the journalist (*'by Mike Campbell'*) or the section the article belongs to (*'Business Highlight'*). Therefore, I removed duplicates from my source. Even if a duplicated source is relevant, the duplication does not add informational value to the analysis so it is safe to remove all duplicates and reduce the source input to a set of distinct entries.
+
+```{r, eval=FALSE, echo=TRUE}
+# Remove duplicate documents:
+docs <- dedupe(docs)
+
+# length(docs) // 998 => 931
+```
+
+Further, I noted that a number of irrelevant entries though not perfectly identical, contained a matching pattern. For instance:
+  + *"A guide to movies playing on Wednesday"*
+  + *"A guide to movies playing on Friday"*
+In this example, I can group the irrelevant entries by looking for entries containing *'A guide to movies playing on'*.
+
+```{r, eval=FALSE, echo=TRUE}
+# Remove irrelevant documents matching pattern:
+docs <- drop(drops_strings, docs)     
+
+# length(docs) // 931 => 916
+```
+
+
+### Data normalization
+
+In order to create a document vector composed of the document words, I need to normalize the documents by removing the punctuation, the apostrophes and the blanks.
+
+```{r, eval=FALSE, echo=TRUE}
+docs <- clean.document.punctuation(docs)
+```
+
+### Tokenization
+
+#### Vectorization of documents
+
+I can now transform my document collection into a collection of document vectors.
+```{r, eval=FALSE, echo=TRUE}
+document.vector <- vectorize.documents(docs)
+```
+
+#### Stop words removal
+
+In order to filter out stop words from the document vectors I use the `SMART` collection of stop words from the `tm` library which contains `length(stopwords(kind="SMART"))` stop words.
+
+After some iterations of cluster analysis, I noticed that a number of words that are not listed in the `SMART` collection were found often in documents but did not convey any identifiable concept.
+Therefore, I have listed as many of those words as possible and included them to the list of stop words to be removed from the document vectors.
+
+```{r, eval=FALSE, echo=TRUE}
+
+STOP_WORDS <- c(
+  stopwords(kind="SMART"),
+  # Common numbers, ordering words
+  "one", "two", "three", "four", "ten", "fifty", "hundred",'hundr', "thousand", "million", "billion",
+  "first", "second", "third", "fourth", "tenth", "fifti", "dozen",
+  "next", "previous", "past", "times",
+  # individual related
+  'man', 'woman', 'mr', 'mrs', 'people', 'boy', 'girl','boys', 'girls', "miss", "mister",
+  'individual','individu',
+  # Time, calendar values
+  'minute', 'hour',"day", "week", "weekend", "month", "year", 'annual',
+  "today", "yesterday",'tomorrow', "night", "everyday",
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+  "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+  "jan","feb","mar","apr" ,"may", "jun", "jul","aug", "sep", "oct", "nov", "dec",
+  "january", "february", "march", "april", "june", "july","august", "september",
+  "october", "november", "december",
+  
+  'when',
+  # Common adjectives, nouns, adverbs
+  "new",'newer', "news", 'recent',"old", "start", "end", "back", 'good',"best", "longer", "better", "perfect",
+  'bit', 'lot', 'biggest','rest', 'beneath', 'around', 'about', 'surround', 'basic', 'alongsid', 'closer', 'earli',
+  "close", "slow", "fast", "quick", "late", "latest","time", "top", "list", "small","big", "large",
+  "short", "long", "direct", "part", 'lack', 'newest', 'high', 'low',
+  "thing", "stuff","place", "brief",'briefli',"set", "sets", "fair", "call",
+  "los", "las", "san", "percent", "pre", "real", "really", "actually", "actual",
+  'street', 'avenu', 'city','citi', 'address','mike', 'state', 'inside', 'insid', 'appar', 'ago',
+  'key', 'countri','member', 'air', 'choic', 'articl', 'group',
+  # Common verbs
+  "will","went","can","said","say","take","get", "increas", "decreas", 
+  "may", "might","must", "talk","win", "winner", "won", "help", "present", 'answer',
+  "find","eat","open", "need", "take", "use", "work", "show", "shows",
+  "look","make","give","move","run", "decide", "respond", 'shot', 'shoot',
+  "add", "act", "feel",  "leads", "added", "adds", "rise", "speak",
+  "write", "wrote", "wasn", "weren", "name", "don", "amp", "isn",
+  "choose", "chose", "made", "stay", "staying", "left", "call",
+  "happen", "spend", "faced", "met", "meet", "offer", "felt", "drop",
+  "couldn", "mustn", "could", "must", "did", "didn", "require", "requires",  "required",
+  "interest","interested","interesting", "think", "thought", "suggest", "mention", "build",
+  "understand", "accept",'learn', 'explain', 'raise', 'raise', 
+  'includ', 'includes', 'include', 'including', 'face', 'put', 'note',
+  'begin', 'continu', 'creat', 'hope', 'teach', 'draw', 'base', 'play', 'built',
+  'lead', 'stop', 'found','expect', 'stand', 'bring', 'brought', 'thought', 'reach', 'attempt',
+  'surpris', 'announc', 'aim', 'rang', 'range', 'affect', 'impact', 'develop', 'descend', 'featur',
+  'plan',
+  # Film related noisy terms
+  "reviews","review","box", "office","show",
+  # Search terms
+  "robot", "robots", "machine", "machines", "machina", "futur", "nyt",
+  
+  #MAYBES
+  "technolog","technology", "tech", "human", "author",
+  "world", "north", "south", "east", "west", '$'
+)
+
+
+document.vector <- remove.stop.words(document.vector, STOP_WORDS)
+
+```
+
+#### Short words removal
+
+Words that are strictly shorter than 3 characters do not convey relevant meaning and cause a lot of noise in the clustering analysis.
+The following code removes words that are 2 characters or less from each document vector.
+
+```{r, eval=FALSE, echo=TRUE}
+# Remove words 2 char long or less
+document.vector <- remove.short.word(document.vector)
+```
+
+
+### Lemmatisation
+
+Lemmatisation is the process of grouping together the different inflected forms of a word so they can be analyzed as a single item.
+As part of the lemmatisation effort, I grouped similar terms under one single synonym as much as possible (synonym expansion) and reduced each term to its stem (stemming).
+
+#### Synonym expansion
+
+Below is the code performing synonym expansion on the collection of document vectors.
+`str_replace_all(expression_1, expression_2)` replaces `expression_1`, when found, with `expression_2`.
+
+```{r, eval=FALSE, echo=TRUE}
+# INPUT_TYPE: List of documents
+synonym.expansion.documents <- function (document.vector) {
+  
+  document.vector %>%
+    lapply(.,  function(x){
+      x %>%
+        tolower() %>%                           # change to lower case
+        
+        # Cybernation semantic
+        str_replace_all("automation","automat")         %>%
+        str_replace_all("automatic","automat")          %>%
+        str_replace_all("automated","automat")          %>%
+        str_replace_all("automates","automat")           %>%
+        str_replace_all("automate","automat")           %>%
+        str_replace_all("automating","automat")         %>%
+        str_replace_all("automatization","automat")     %>%
+        str_replace_all("automatize","automat")         %>%
+        str_replace_all("automatizing","automat")       %>%
+        str_replace_all("automatd","automat")           %>%
+        str_replace_all("automatons","automat")         %>%
+        str_replace_all("automaton","automat")          %>%
+        str_replace_all("autonomy","autonom")           %>%
+        str_replace_all("autonomously","autonom")       %>%
+        str_replace_all("autonomous","autonom")         %>%
+        str_replace_all("smart","intelligent")          %>%
+        str_replace_all("clever","intelligent")         %>%
+        str_replace_all("brilliant","intelligent")      %>%
+        str_replace_all("intelligence","intelligent")   %>%
+        str_replace_all("brainy","intelligent")         %>%
+        str_replace_all("humanlike","android")          %>%
+        str_replace_all("humanlik","android")          %>%
+        
+        
+        # Cities, countries
+        str_replace_all("new york times","nyt")         %>%
+        str_replace_all("new york city","nyc")          %>%
+        str_replace_all("new york","nyc")               %>%
+        str_replace_all("york","nyc")                   %>%
+        str_replace_all("chinese","china")              %>%
+        str_replace_all("chines","china")               %>%
+        str_replace_all("japanese","japan")             %>%
+        str_replace_all("tokyo","japan")                %>%
+        str_replace_all("beijing","china")              %>%
+        str_replace_all("americans","usa")              %>%
+        str_replace_all("american","usa")               %>%
+        str_replace_all("america","usa")                %>%
+        str_replace_all("malaysian","malaysia")         %>%
+        
+        # Entertainment
+        str_replace_all("animated","animation")         %>%
+        str_replace_all("trailer","cinema")             %>%
+        str_replace_all("movies","cinema")               %>%
+        str_replace_all("movie","cinema")                %>%
+        str_replace_all("films","cinema")               %>%
+        str_replace_all("film","cinema")                %>%
+        str_replace_all("theater","cinema")             %>%
+        str_replace_all("superhero","hero")             %>%
+        str_replace_all("reader","book")                %>%
+        str_replace_all("kids","child")                 %>%
+        str_replace_all("kid","child")                  %>%
+        str_replace_all("children","child")             %>%
+        
+        # Industry
+        str_replace_all("jobs","labor")                 %>%
+        str_replace_all("job","labor")                  %>%
+        str_replace_all("businesses","business")        %>%
+        str_replace_all("compani","business")           %>%
+        str_replace_all("corporation","business")       %>%
+        str_replace_all("corp","business")              %>%
+        
+        str_replace_all("alphabet","google")            %>%
+        str_replace_all("amazoncom","amazon")           %>%
+        
+        # Science
+        str_replace_all("researcher","scientist")       %>%
+        str_replace_all("studi","research")             %>%
+        
+        # Car
+        str_replace_all("automakers","car manufacturer")%>%
+        str_replace_all("automaker","car manufacturer") %>%
+        str_replace_all("vehicles","car")               %>%
+        str_replace_all("vehicle","car")                %>%
+        str_replace_all("vehicl","car")                 %>%
+        str_replace_all('selfdriving',"selfdrive")     %>%
+        str_replace_all("self driving","selfdrive")     %>%
+        str_replace_all("driverless","selfdrive")       %>%
+        str_replace_all("driver","drive")               %>%
+        str_replace_all("driving","drive")              %>%
+        
+        # Sea
+        str_replace_all("oceanic","marine")             %>%
+        str_replace_all("ocean","marine")               %>%
+        str_replace_all("underwater","marine")          %>%
+        
+        # Space
+        str_replace_all("international space station","iss")  %>%
+        str_replace_all("space station","iss")          %>%
+        
+        #Misc
+        str_replace_all("empathetic","empathy")         %>%
+        
+        {. } -> synonymized.doc
+      
+      return(synonymized.doc)
+      
+    }) %>%
+    { . } -> synomized.doc.collection
+      
+    return(unlist(synomized.doc.collection))
+}
+
+document.vector <- synonym.expansion.documents(document.vector)
+```
+
+#### Stemming
+
+Stemming consists in replacing inflected forms of a word to a stemmed form.
+For instance: *destroying*, *destroys* and *destroyed* will all be stemmed to *destroy*.
+
+```{r, eval=FALSE, echo=TRUE}
+document.vector <- stem.words(document.vector)
+```
+
+Because stemming transforms terms, it makes sense to clean the data a second time after performing it (stop-words, short words, synonym expansion).
+
+
+#### Remove empty or one word documents
+
+My objective is to cluster together concepts or events emerging from a collection of articles pulled when searching for the keyword 'robot'.
+If at the end of the cleaning process, a document is empty or contains only one term, it will not help me link concepts together.
+Therefore, I need to remove documents containing one word or less from my collection of documents.
+
+```{r, eval=FALSE, echo=TRUE}
+# Cleaning round#2 (post stemming)
+# Remove stop words // Collections =  (SMART) + (Custom)
+document.vector <- remove.stop.words(document.vector, STOP_WORDS)
+# Remove words less than 2 char long
+document.vector <- remove.short.word(document.vector)
+# Remove empty terms: eg: c("","","house") -> c("house")
+document.vector <- remove.empty.terms(document.vector)
+# If a document contains only one term change value of term to: "".
+document.vector <- nullify.one.word.document(document.vector)
+# Remove empty terms:
+document.vector <- remove.empty.terms(document.vector)
+
+# Convert document vectors to document strings
+document.vector <- vec.to.string(document.vector)
+# Perform synonym expansion
+document.vector <- unlist(synonym.expansion.documents(document.vector))
+
+# Remove empty documents from document.vector
+# Update original collection accordingly
+non.empty <- empty.doc.logical(document.vector)
+
+document.vector <- document.vector[non.empty]
+docs.clean <- docs.clean[non.empty]
+docs <- docs[non.empty]
+```
+
+
+## Investigation
+
+### Summary
+
+Parameter  | Value                | Reason
+---------- | -------------------- | ---------------------------------------------
+Query term | "robot"              | Want to know if we are doomed
+Begin date | 1 Jan 2014           | Most recent time range
+End date   | 20 Mar 2016          | ...yielding 1K articles
+Field      | `snippet`            | Field with least NA value
+Stemming   | Yes                  | 
+N-grams    | 1                    | See discussion
+Stopwords  | "SMART" + Custom     |
+Stopwords  | "robot"              | This is the search term.
+Weighting  | Binary               | Not affected by term redundancy
+Threshold  | 2                    | Yields more relevant top words per cluster
+Algorithm  | k-means              | Yields clusters with best silhouette
+`k`        | 30                   | See discussion
+
+
+
+
+### Details
+
+
+#### Query term: **'robot'**
+
+In order to capture a maximum number of articles related to robotics, I chose to use the keyword 'robot'. It is general enough and yet not too broad for the purpose of this research.
+
+
+#### Begin date / End date
+
+The main focus of the time window for the article search is that it is recent and yields enough article to perform a clustering analysis. I found that taking a period from present date to 2 years back yielded a thousand of articles which is a significant enough document collection size for the purpose of this research.
+
+
+#### Stemming
+
+Please refer to the previous section **'Lemmatisation'**.
+
+
+#### N-Grams
+
+Only 1-grams have been used in this research. After multiple iterations, it appeared that for any n-grams where n > 1, the n-grams did not appear as a top-word hence did not have much effect on clusters. Overall the cluster were more homogeneously sized when using 1-grams only than when using 2-grams or a combination of 1-grams and 2-grams.
+
+
+#### Stop words
+
+Please refer to the previous section **'Tokenization'**.
+
+
+#### Weighting
+
+After trying weighting terms by *Term-Frequency*, *Term-Frequency Inverse Document Frequency* and *Binary*, I observed that TfIdf yielded better silhouette score and top-words for each cluster than Tf and that Binary weighting performed even better than TfIdf. This can be explained by the fact that Binary weighting is not affected by term redundancy in documents.
+The article snippets are of various sizes. Size strongly affect the chances for term redundancy but should not affect the clustering. Therefore, it appears that when trying to link overall short documents of varying length, term redundancy is not something that should be included in the term weighting of documents. 
+
+
+#### Threshold
+
+I chose a minimum frequency threshold of 2. A term has to appear at least in two distinct documents to be included in the Term-Document Frequency table before creating the clusters. I observed that not using a threshold yielded clusters with self-explanatory top words and that using a threshold above 2 was detrimental for the silhouette score of clusters.
+
+
+#### Clustering technique and cluster size
+
+I used cValid to determine a number of clusters and the clustering technique
+
+```{r, echo=TRUE, eval=TRUE}
+library(clValid)
+
+dtm.clValid = clValid(dtm[,],
+                       nClust=c(20, 30, 50, 70, 90),
+                       clMethods=c("kmeans","pam"),
+                       validation='internal',
+                      maxitems = 1000
+                      )
+
+
+summary(dtm.clValid)
+```
+
+The method and cluster count yielding the best silhouette is k-means with k = 30.
+
+
+
+### Evaluation
+
+#### Cluster counts
+
+The table below indicates the number of articles that are contained in each cluster. 
+
+```{r, echo=FALSE, eval=TRUE}
+as.data.frame(table(cluster_kmeans2)) %>%
+  filter(Freq >10)
+```
+
+The clustering yields 18 clusters of homoneous size. One cluster is too big for accurate analysis and 11 clusters with size less than 10 are not significant enough to be analyzed.
+
+
+#### Clusters
+
+
+##### Cluster: Films, shows, entertainment industry (1)
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 2)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(2)
+```
+
+
+##### Cluster: Films, shows, entertainment industry (2)
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 14)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(14)
+```
+
+
+##### Cluster: Golden globes award
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 9)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(9)
+```
+
+Except for articles dealing specifically with films, shows about robots ('big hero 6', 'Terminator', 'Ex-Machina'), the clusters of articles relating to the entertainment industry are mostly off topic.
+
+#### Cluster: Artificial intelligence
+
+This cluster of documents focuses on Artificial Intelligence as a subfield of robotics. The articles mention both the opportunities of using artificial intelligence to tackle complex problems and also the peril that a non-human intelligence present for mankind.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 3)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(3)
+```
+
+
+#### Cluster: Japanese robots (1)
+
+This cluster of articles focused on Japanese robots. Japan is a world leader in robots and it is expected to find a dedicated cluster to Japanese robotics.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 6)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(6)
+```
+
+
+#### Cluster: Japanese robots (2)
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 11)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(11)
+```
+
+
+
+#### Cluster: Self-driving cars
+
+This cluster focuses on the application of robotics in the car industry and specifically to create self-driving cars. Looking at this cluster emphasizes on how important a role Google plays in this field.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 8)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(8)
+```
+
+
+
+#### Cluster: Space exploration
+
+Role of robots in space. Focus on the resupply of the International Space Station.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 12)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(12)
+```
+
+
+
+#### Cluster: Police
+
+Just a dull Police cluster...
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 15)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(15)
+```
+
+
+
+#### Cluster: Star Wars
+
+This cluster regroups articles about Star Wars and more specifically the robots of Star Wars. The concepts linked to this cluster are 'Disney' which makes sense because the company bought the Star Wars franchise to Lucas Art and then released a new opus for the Saga: "the Force Awakens". Some outliers are observed in the data. They are articles that are not about Star Wars but have been grouped in this cluster because their terms belong to the entertainment industry semantic.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 16)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(16)
+```
+
+
+#### Cluster: Robot stealing human jobs
+
+The recurrent theme in this cluster is the impact of robotization of labor in the economy: 'a job killing catastrophone' or an opportunity to stop employing humans for inhumane jobs. Not surpringsingly there is a number of Frankenstein myth articles about the dystopian future in which the machines have taken over.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 18)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(18)
+```
+
+
+#### Cluster: Robotics research
+
+The recurrent theme in this cluster is robotics research. Multiple article mention the imitation of nature in the design of robots.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 22)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(22)
+```
+
+
+#### Cluster: Malaysian Airlines wreckage search
+
+This cluster is related to the use of robotics for underwater application but deals specifically with the case of deploying robots to investigate the wreckage of the Malaysian Airline jetliner in the Indian ocean.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 26)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(26)
+```
+
+
+#### Cluster: Chinese economy
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 27)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(27)
+```
+
+Comment:
+
+#### Cluster: Kids and robotics
+
+This cluster focuses on robots and children. The articles describe robots as game or teaching companion for children and mention the special relationship between gifted kids and robots.
+
+```{r, echo=FALSE, eval=TRUE}
+options(warn=-1)
+TopWords(dtm, cluster_kmeans2, 30)
+
+```
+
+```{r, echo=FALSE, eval=TRUE}
+view.cluster(30)
+```
+
+  
+# Conclusion
+
+This result comes after a long serie of iterations for which I documented the outcomes in the investigation parameters section.
+It is the best analysis yielded to date for in the context of this research. Although there is a massive cluster of 420 records, the clustering presents about 20 healthy clusters that are homogeneous in terms of size and with a clearly identified topic.
+
+Surprisingly, querying 'robot' through the New York Times API yielded articles that are not connected to robots at all. A more extensive background work would implement a preliminary filter to eliminate articles that are not related to the subject matter. This could be achieved by dropping all articles not containing any keywords such as 'robot', 'drone', 'bot', 'droid', 'artificial intelligence', 'machine',...
+
+This extensive background cleaning would allow to eliminate insignificant clusters (size inferior to 10 documents) and to lesser cluster#19.
+
+The clustering parameters are as good as they can get as of now. However, better clusters can be found if the synonym dictionnary is improved and if additional stop words are identified. Any modification of the data cleaning function calls for reevaluating the number of clusters to be generated and for a new iteration of the investigation.
